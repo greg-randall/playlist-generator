@@ -28,7 +28,7 @@ from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 import debuglog
@@ -205,8 +205,12 @@ def _spotify_client(run: Optional[Run] = None):
     With a run, a needed Spotify login is sent to the page as an ``auth`` event
     (the page opens it) rather than left to spotipy's own browser launch.
     """
-    from generate_playlist import build_spotify_client
+    from generate_playlist import build_spotify_client, has_spotify_login
 
+    if run is None and not has_spotify_login():
+        # Not part of a run, so there is no console to show a login in: say so instead of hanging.
+        raise RuntimeError("Spotify login needed. Start any run (Check only is harmless) to log in, "
+                           "then try again.")
     in_app = _login_listener_up
 
     def announce_login(url: str) -> None:
@@ -376,6 +380,11 @@ def _open_login_listener() -> None:
               "spotipy's own one-shot listener.".format(_redirect_port()), flush=True)
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)  # no icon; answer quietly instead of a 404 in the console
+
+
 @app.get("/")
 def index():
     return FileResponse(HERE / "index.html")
@@ -420,10 +429,11 @@ def playlist_tracks(params: PlaylistLink):
         debuglog.record("app", "load playlist failed: {}: {}".format(type(exc).__name__, exc),
                         playlist_id=playlist_id, error=type(exc).__name__, detail=str(exc),
                         traceback=traceback.format_exc())
+        if isinstance(exc, RuntimeError):  # our own message, e.g. a login is needed
+            raise HTTPException(status_code=401, detail=str(exc))
         raise HTTPException(
             status_code=502,
-            detail="Spotify wouldn't return that playlist ({}). "
-                   "Private playlists can't be read yet.".format(type(exc).__name__),
+            detail="Spotify wouldn't return that playlist ({}: {}).".format(type(exc).__name__, exc),
         )
     return {"playlist_id": playlist_id, "name": name, "tracks": tracks}
 

@@ -244,7 +244,8 @@ function printServerRecords(records) {
     if (seenServer.has(id)) return;
     seenServer.add(id);
     runDebug.server.push(rec);
-    const bad = rec.ok === false || (rec.status && rec.status >= 400) ||
+    // A 404 is a normal answer ("no lyrics for that song"), not a failure, so it is not flagged.
+    const bad = (rec.ok === false && rec.status !== 404) || (rec.status && rec.status >= 400 && rec.status !== 404) ||
                 rec.level === "ERROR" || rec.level === "CRITICAL";
     const warn = rec.level === "WARNING";
     const label = "%c[" + clock(rec.t * 1000) + "] server " + rec.cat + "%c " + rec.msg;
