@@ -73,8 +73,10 @@ class FakeDiscoverySpotify:
     def me(self):
         return {"id": "test-user"}
 
-    def search(self, q, type="track", limit=50, offset=0):
-        idx = offset // 50
+    def search(self, q, type="track", limit=10, offset=0):
+        if limit > 10:  # what Spotify answers today: 400 "Invalid limit"
+            raise Exception("400 Invalid limit")
+        idx = offset // limit
         items = self.pages[idx] if idx < len(self.pages) else []
         return {"tracks": {"items": items, "total": 999}}
 
@@ -169,7 +171,7 @@ class FromSpotifyPipelineTests(unittest.TestCase):
                 spotify_track("a", "Hotdog", "Band A"),
                 spotify_track("b", "Hotdog Two", "Band B"),
             ],
-            [],  # offset 50 empty -> loop stops
+            [],  # offset 10 empty -> loop stops
         ]
         songs_map = {"Hotdog": "hotdog hotdog hotdog hotdog"}  # "Hotdog Two" absent -> no lyrics
 

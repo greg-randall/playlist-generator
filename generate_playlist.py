@@ -636,7 +636,9 @@ class PlaylistBuilder:
         """Use Spotify as the discovery engine, matching on Genius lyrics."""
         self.emit("search", "Searching Spotify for '{}'".format(main_search), engine="spotify")
         offset = start_offset
-        limit = 50
+        # Spotify's search now rejects a limit above 10 with 400 "Invalid limit" (it was 50).
+        # Smaller pages, same results: the offset still walks through them, in more requests.
+        limit = 10
         # Spotify caps search paging at offset+limit <= 1000.
         while offset < 1000:
             if self.should_stop():
@@ -754,7 +756,11 @@ def build_spotify_client():
     from spotipy.oauth2 import SpotifyOAuth
 
     print("Authenticating with Spotify")
-    scope = "playlist-modify-public"
+    # read-private: listing your playlists (to reuse one with the same name) and loading a
+    # private playlist; modify-private: adding to one. Spotify now answers 403 "Insufficient
+    # client scope" to the list call without read-private. A token saved with fewer scopes
+    # makes spotipy ask you to log in again once.
+    scope = "playlist-modify-public playlist-modify-private playlist-read-private"
     # requests_timeout bounds any single call (no indefinite hangs); retries
     # kept modest so a rate-limited call doesn't block Stop for too long.
     return spotipy.Spotify(
