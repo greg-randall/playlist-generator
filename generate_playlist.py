@@ -807,7 +807,8 @@ def _seed_from_playlist_tracks(sp, builder: "PlaylistBuilder", playlist_id: str)
     """Record the tracks already in a playlist so we don't re-add them."""
     tracks = sp.playlist_tracks(playlist_id)
     for item in tracks["items"]:
-        track = item.get("track") or {}
+        # Spotify's /items answers use "item"; the old /tracks answers used "track".
+        track = item.get("item") or item.get("track") or {}
         artists = track.get("artists") or [{}]
         builder.register(track.get("id"), track.get("name", ""), artists[0].get("name", ""))
 

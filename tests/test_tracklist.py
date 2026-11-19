@@ -224,6 +224,14 @@ class FetchPlaylistTests(unittest.TestCase):
         self.assertEqual(tracks[0], {"line": "Song 0 - Band", "id": "t0"})
         self.assertEqual([t["id"] for t in tracks], ["t%d" % i for i in range(150)])
 
+    def test_reads_the_new_item_shape_spotify_now_sends(self):
+        # Spotify's /items answers put each track under "item", not "track".
+        sp = FakeSpotify([])
+        sp.playlists["pl"] = {"name": "poland", "items": [
+            {"item": track("t1", "Poland", "Lil Yachty")}, {"item": None}]}
+        name, tracks = tl.fetch_playlist(sp, "pl")
+        self.assertEqual(tracks, [{"line": "Poland - Lil Yachty", "id": "t1"}])
+
 
 class KnownTrackTests(unittest.TestCase):
     A, B = "A" * 22, "B" * 22
