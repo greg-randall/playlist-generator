@@ -442,20 +442,35 @@ function embedSrc(id) {
          "?utm_source=generator&t=" + Date.now();
 }
 
+// A playlist Spotify has only just created is often not ready to play yet: loading the player the
+// instant the run ends gives a player that fails (Refresh fixed it a few seconds later). So the
+// first load waits a moment, showing the "warming" message. Reloading later would cut off a song
+// that is already playing, which is why it waits instead of reloading. Tune PLAYER_DELAY_MS if
+// the player still fails (or loads later than it needs to).
+const PLAYER_DELAY_MS = 4000;
+let mountTimer = null, mountedAt = 0;
 function mountPlayer() {
-  // Only mount the real embed once the playlist actually has a track --
-  // an empty Spotify playlist embed renders as a broken-looking blank.
-  if (playerMounted || !playlistId) return;
-  $("playerWrap").innerHTML =
-    '<iframe src="' + embedSrc(playlistId) + '" allow="encrypted-media" loading="lazy"></iframe>';
-  playerMounted = true;
-  $("refresh").disabled = false;
+  if (playerMounted || mountTimer || !playlistId) return;
+  renderPlayer("warming");
+  console.log("[playlist] player will load in " + PLAYER_DELAY_MS / 1000 + "s (a new playlist needs a moment before it can play)");
+  mountTimer = setTimeout(() => {
+    mountTimer = null;
+    if (!playlistId) return;
+    $("playerWrap").innerHTML =
+      '<iframe src="' + embedSrc(playlistId) + '" allow="encrypted-media" loading="lazy"></iframe>';
+    playerMounted = true; mountedAt = performance.now();
+    $("refresh").disabled = false;
+    console.log("[playlist] player loaded");
+  }, PLAYER_DELAY_MS);
 }
 
-function refreshPlayer() {
+function refreshPlayer(why) {
   if (!playlistId) return;
   const f = document.querySelector("#playerWrap iframe");
-  if (f) f.src = embedSrc(playlistId); // fresh timestamp forces a real reload
+  if (f) {
+    f.src = embedSrc(playlistId); // fresh timestamp forces a real reload
+    console.log("[playlist] player reloaded (" + (typeof why === "string" ? why : "manual refresh") + ")");
+  }
 }
 
 async function poll() {
@@ -492,8 +507,12 @@ async function poll() {
   if (done) {
     debugSummary(data.status);
     finish();
-    if (playerMounted) refreshPlayer();
-    else renderPlayer(emptyState);
+    if (playerMounted) {
+      // Tracks added after the player loaded are not in it, so reload; but not if it loaded after
+      // the last track (that would only cut off playback for nothing).
+      if (performance.now() - mountedAt > 6000) refreshPlayer("run ended; tracks were added after the player loaded");
+      else console.log("[playlist] player loaded after the last track; no reload needed");
+    } else if (!mountTimer) renderPlayer(emptyState);
   } else {
     setStatus(data.status);
   }
@@ -511,6 +530,7 @@ function finish() {
 
 // Shared by both modes: reset the console/player, POST the run, start polling.
 async function begin(url, body, emptyKey) {
+  clearTimeout(mountTimer); mountTimer = null;
   $("console").innerHTML = ""; cursor = 0; playlistId = null; playerMounted = false;
   emptyState = emptyKey;
   renderPlayer("idle"); $("refresh").disabled = true;
@@ -707,7 +727,7 @@ $("sourceLink").addEventListener("keydown", (e) => { if (e.key === "Enter") load
 $("modeSearch").onclick = () => setMode("search");
 $("modeList").onclick = () => setMode("list");
 $("stop").onclick = stop;
-$("refresh").onclick = refreshPlayer;
+$("refresh").onclick = () => refreshPlayer("manual refresh");
 $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
 
 renderPlayer("idle");  // cold-start state on first load

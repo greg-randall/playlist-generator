@@ -117,6 +117,11 @@ def main() -> int:
             wait_for_console(page, "Done.", 60)
             assert "open.spotify.com/playlist/" in console_text(page) or page.locator("#playerWrap iframe").count(), \
                 "no playlist link or player after Create"
+            page.wait_for_selector("#playerWrap iframe", state="attached", timeout=15000)  # loads ~4s after
+            time.sleep(8)
+            assert any("player loaded" in m for m in messages), "the player never loaded"
+            reloads = [m for m in messages if "player reloaded" in m]
+            assert not reloads, "the player reloaded itself and would cut off playback: {}".format(reloads)
 
         def search():
             click("#modeSearch")
