@@ -212,7 +212,52 @@ function setStatus(s) {
   $("dot").className = "dot " + (["running","complete","stopped","error"].includes(s) ? s : "");
 }
 
+// ---- Debug output in the browser's devtools console (F12 > Console) ----------
+// Every event the server sends is logged with its full data and the time since the
+// run started. Verbose events are collapsed groups; errors use console.error. When
+// a run ends, a summary table counts events by kind. window.runDebug holds the run.
+const COLORS = {error:"#ff6b6b", miss:"#ffa94d", added:"#51cf66", found:"#51cf66",
+                duplicate:"#868e96", below:"#868e96", tempo:"#e9ecef", done:"#7fbfff"};
+let runDebug = null;
+
+function debugStart(url, body) {
+  runDebug = {url: url, body: body, startedAt: performance.now(), events: [], polls: 0};
+  window.runDebug = runDebug;
+  console.groupCollapsed("%c[playlist] run started: " + url, "color:#7fbfff;font-weight:bold");
+  console.log("request body", body);
+  console.groupEnd();
+}
+
+function debugEvent(ev) {
+  if (!runDebug) return;
+  const t = ((performance.now() - runDebug.startedAt) / 1000).toFixed(2) + "s";
+  runDebug.events.push(Object.assign({t: t}, ev));
+  const label = "%c[" + t + "] " + ev.kind + "%c " + (ev.message || "");
+  const style = "color:" + (COLORS[ev.kind] || "#7fbfff") + ";font-weight:bold";
+  const fields = Object.keys(ev).filter((k) => k !== "kind" && k !== "message");
+  if (ev.kind === "error") { console.error(label, style, "", ev); return; }
+  if (fields.length === 0) { console.log(label, style, "", ""); return; }
+  console.groupCollapsed(label, style, "");
+  console.table(ev);
+  console.log("raw event", ev);
+  console.groupEnd();
+}
+
+function debugSummary(status) {
+  if (!runDebug) return;
+  const seconds = ((performance.now() - runDebug.startedAt) / 1000).toFixed(1);
+  const counts = {};
+  runDebug.events.forEach((ev) => { counts[ev.kind] = (counts[ev.kind] || 0) + 1; });
+  console.group("%c[playlist] run " + (status || "finished") + " in " + seconds + "s ("
+                + runDebug.events.length + " events, " + runDebug.polls + " polls)",
+                "color:#7fbfff;font-weight:bold");
+  console.table(counts);
+  console.log("all events: window.runDebug.events");
+  console.groupEnd();
+}
+
 function line(ev) {
+  debugEvent(ev);
   const div = document.createElement("div");
   // 'evaluate' events color by verdict (below/match); others by kind.
   let cls = ev.kind;
@@ -249,7 +294,9 @@ function refreshPlayer() {
 }
 
 async function poll() {
+  if (runDebug) runDebug.polls++;
   const r = await fetch("/api/events?cursor=" + cursor);
+  if (!r.ok) console.error("[playlist] poll failed:", r.status, r.statusText);
   const data = await r.json();
   cursor = data.cursor;
   let done = false;
@@ -272,6 +319,7 @@ async function poll() {
     if (!playerMounted) renderPlayer("warming");
   }
   if (done) {
+    debugSummary(data.status);
     finish();
     if (playerMounted) refreshPlayer();
     else renderPlayer(emptyState);
@@ -297,11 +345,13 @@ async function begin(url, body, emptyKey) {
   renderPlayer("idle"); $("refresh").disabled = true;
   setRunning(true);
   setStatus("running");
+  debugStart(url, body);
   const r = await fetch(url, {
     method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
+    console.error("[playlist] could not start:", r.status, e);
     line({kind:"error", message:"Could not start: " + (e.detail || r.status)});
     finish(); setStatus("error"); return;
   }
