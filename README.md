@@ -183,6 +183,19 @@ Add `-h` to any of them for every option.
 The tests never contact Spotify, Genius, or any other service (they use stand-ins),
 so running them can't use up rate limits or get you blocked.
 
+### Checking the real app in a real browser
+
+The tests above can't notice when a service changes (Spotify has retired endpoints, tightened
+limits and changed answer shapes). `e2e/ui_check.py` drives the running app in Chrome with
+[Playwright](https://playwright.dev/python/), against the real services:
+
+    pip3 install playwright
+    python3 e2e/ui_check.py                  # page loads, Load tracks, Check only (creates nothing)
+    python3 e2e/ui_check.py --search poland  # also a real lyric search (creates a playlist)
+
+Start the app and log in to Spotify once first. It prints PASS or FAIL for each step and saves
+the browser console to `e2e/out/console.log`.
+
 ## More
 
 - [SETUP_DATABASE.md](SETUP_DATABASE.md) -- setting up the free database

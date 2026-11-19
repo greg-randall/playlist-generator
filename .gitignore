@@ -15,3 +15,6 @@ __pycache__/
 # OS
 .DS_Store
 song_keys_backup.json
+
+# Playwright run output (screenshots, browser console)
+e2e/out/
