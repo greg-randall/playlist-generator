@@ -208,8 +208,9 @@ def write_playlist(sp, track_ids: list[str], title: Optional[str] = None,
     """
     remaining = list(track_ids)
     if playlist_id is None:
-        playlist_id = sp.user_playlist_create(
-            sp.me()["id"], title, public=True,
+        # (not user_playlist_create: Spotify retired that endpoint, it answers 403)
+        playlist_id = sp.current_user_playlist_create(
+            title, public=True,
             description="Ordered playlist built from a track list",
         )["id"]
     elif replace:

@@ -832,8 +832,9 @@ def resolve_playlist(sp, builder: "PlaylistBuilder", args) -> str:
             return playlist["id"]
 
     print("Creating playlist '{}' for search term '{}'".format(title, args.query))
-    response = sp.user_playlist_create(
-        sp.me()["id"],
+    # Spotify retired POST /users/{id}/playlists (it now answers 403); this one
+    # posts to /me/playlists.
+    response = sp.current_user_playlist_create(
         title,
         public=True,
         description="Smart playlist supplied by beast infection",
