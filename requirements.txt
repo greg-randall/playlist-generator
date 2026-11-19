@@ -1,5 +1,5 @@
 # Core pipeline
-spotipy
+spotipy>=2.26.0
 lyricsgenius
 
 # Web UI (v1)

@@ -45,8 +45,8 @@ class FakeSpotify:
         page = items[offset:offset + limit]
         return {"items": page, "next": "more" if offset + limit < len(items) else None}
 
-    def user_playlist_create(self, user, name, public=True, description=""):
-        self.created.append((user, name))
+    def current_user_playlist_create(self, name, public=True, description=""):
+        self.created.append((self.me()["id"], name))
         return {"id": "new-playlist"}
 
     def playlist_add_items(self, playlist_id, items):

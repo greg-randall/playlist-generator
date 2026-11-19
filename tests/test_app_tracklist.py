@@ -37,7 +37,7 @@ class FakeSpotify:
         query = q.lower()
         return {"tracks": {"items": [t for t in self.catalog if t["name"].lower() in query]}}
 
-    def user_playlist_create(self, user, name, public=True, description=""):
+    def current_user_playlist_create(self, name, public=True, description=""):
         self.created.append(name)
         return {"id": "new-playlist"}
 
