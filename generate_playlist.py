@@ -748,19 +748,31 @@ class PlaylistBuilder:
 # Spotify / playlist plumbing (network side, not unit tested)
 # --------------------------------------------------------------------------- #
 
-def build_spotify_client(on_auth_url=None):
+def build_spotify_client(on_auth_url=None, wait_for_code=None):
     """Authenticate against Spotify. Imported lazily so the module stays import-safe.
 
     ``on_auth_url(url)``, if given, is called with the Spotify login URL when a
     login is needed, instead of spotipy opening a browser itself. The web app uses
     this to open the login from the page, because spotipy's own browser launch
     silently does nothing where no desktop browser is reachable (e.g. WSL).
+
+    ``wait_for_code()``, if also given, blocks until the login's authorization code
+    arrives and returns it. The web app uses this when Spotify redirects back to the
+    app itself, so the login ends on a page the app serves rather than on spotipy's
+    one-shot listener (which leaves "can't reach this page" after its first request).
+    Without it, spotipy's own listener on the redirect URI's port catches the code.
     """
     import spotipy
     from spotipy.oauth2 import SpotifyOAuth
 
     class _PageLoginOAuth(SpotifyOAuth):
-        def _open_auth_url(self):  # spotipy's hook for opening the login page
+        def get_auth_response(self, open_browser=None):
+            if wait_for_code is None:
+                return super().get_auth_response(open_browser)  # listener -> _open_auth_url
+            on_auth_url(self.get_authorize_url())
+            return wait_for_code()
+
+        def _open_auth_url(self):  # spotipy's hook, reached only via its own listener
             on_auth_url(self.get_authorize_url())
 
     print("Authenticating with Spotify")

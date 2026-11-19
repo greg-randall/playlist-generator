@@ -27,6 +27,12 @@ create an app and add `http://127.0.0.1:8888/callback` as a redirect URI. Then:
     export SPOTIPY_CLIENT_SECRET=...
     export SPOTIPY_REDIRECT_URI=http://127.0.0.1:8888/callback
 
+The first time the app needs Spotify, it opens the login in a new browser tab from the
+page itself. While the app runs it keeps a small listener on the redirect URI's port
+(8888 here), so the tab ends on a "Logged in to Spotify" page you can close. If the
+app is itself served on that port (set `APP_PORT` if it isn't 8000), its own
+`/callback` route answers instead.
+
 **Genius (required).** At [genius.com/api-clients](https://genius.com/api-clients),
 create an API client and click **Generate Access Token**. Use that *client access
 token*, not the client secret:

@@ -23,8 +23,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
+from urllib.parse import urlparse
+
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 import lrclib
@@ -133,6 +135,67 @@ def default_executor(run: Run) -> None:
     builder.report_misses()
 
 
+# A Spotify login in progress: the run thread waits on ``done`` while Spotify's
+# redirect arrives at this app's own /callback route (see spotify_callback).
+_login = {"done": threading.Event(), "waiting": False, "code": None, "error": None}
+LOGIN_TIMEOUT_SECONDS = 300
+_login_listener_up = False  # set at startup; see _start_login_listener
+
+
+def _redirect_port() -> Optional[int]:
+    """Port of SPOTIPY_REDIRECT_URI when it is a loopback http .../callback, else None."""
+    uri = urlparse(os.environ.get("SPOTIPY_REDIRECT_URI", ""))
+    try:
+        if uri.scheme == "http" and uri.hostname in ("127.0.0.1", "localhost") \
+                and uri.path == "/callback":
+            return uri.port
+    except ValueError:
+        pass
+    return None
+
+
+def _start_login_listener() -> bool:
+    """Keep a small server on the redirect URI's port for as long as the app runs.
+
+    Spotify sends the browser to that address after login. spotipy's own listener
+    answers one request and then closes, leaving "can't reach this page"; this one
+    stays up and shows "Logged in to Spotify". Returns True when something this app
+    controls will answer there (the listener, or the app itself on its own port).
+    """
+    import time
+
+    import uvicorn
+
+    port = _redirect_port()
+    if port is None:
+        return False
+    if port == int(os.environ.get("APP_PORT", "8000")):
+        return True  # the main app already serves /callback on this port
+    callback_app = FastAPI()
+    callback_app.add_api_route("/callback", spotify_callback, response_class=HTMLResponse)
+    server = uvicorn.Server(uvicorn.Config(callback_app, host="127.0.0.1", port=port,
+                                           log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    for _ in range(40):  # up to ~2s to bind; a taken port leaves started False
+        if server.started:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _wait_for_login_code() -> str:
+    """Block the run until /callback receives Spotify's code; raise if it never does."""
+    try:
+        if not _login["done"].wait(LOGIN_TIMEOUT_SECONDS):
+            raise TimeoutError("The Spotify login wasn't finished within {} minutes.".format(
+                LOGIN_TIMEOUT_SECONDS // 60))
+    finally:
+        _login["waiting"] = False
+    if _login["error"] or not _login["code"]:
+        raise RuntimeError("Spotify login failed: {}".format(_login["error"] or "no code returned"))
+    return _login["code"]
+
+
 def _spotify_client(run: Optional[Run] = None):
     """Spotify client for list runs; a seam so tests can swap in a fake.
 
@@ -141,12 +204,17 @@ def _spotify_client(run: Optional[Run] = None):
     """
     from generate_playlist import build_spotify_client
 
+    in_app = _login_listener_up
+
     def announce_login(url: str) -> None:
+        if in_app:
+            _login.update(done=threading.Event(), waiting=True, code=None, error=None)
         run.emit({"kind": "auth", "url": url,
                   "message": "Spotify needs you to log in. A new tab should open; if not, "
                              "open this link and approve: " + url})
 
-    return build_spotify_client(on_auth_url=announce_login if run else None)
+    return build_spotify_client(on_auth_url=announce_login if run else None,
+                                wait_for_code=_wait_for_login_code if run and in_app else None)
 
 
 def tracklist_executor(run: Run) -> None:
@@ -284,6 +352,15 @@ app = FastAPI(title="Playlist Generator")
 app.state.manager = manager
 
 
+@app.on_event("startup")
+def _open_login_listener() -> None:
+    global _login_listener_up
+    _login_listener_up = _start_login_listener()
+    if not _login_listener_up and _redirect_port() is not None:
+        print("Could not listen on port {} for the Spotify login redirect; falling back to "
+              "spotipy's own one-shot listener.".format(_redirect_port()), flush=True)
+
+
 @app.get("/")
 def index():
     return FileResponse(HERE / "index.html")
@@ -328,6 +405,36 @@ def playlist_tracks(params: PlaylistLink):
                    "Private playlists can't be read yet.".format(type(exc).__name__),
         )
     return {"playlist_id": playlist_id, "name": name, "tracks": tracks}
+
+
+_CALLBACK_PAGE = """<!doctype html><meta charset="utf-8"><title>Spotify login</title>
+<body style="font:18px/1.5 system-ui,sans-serif;max-width:32em;margin:15vh auto;padding:0 1em;
+background:#121212;color:#eee"><h2>{heading}</h2><p>{body}</p>{script}</body>"""
+
+
+@app.get("/callback", response_class=HTMLResponse)
+def spotify_callback(code: Optional[str] = None, error: Optional[str] = None):
+    """Where Spotify sends the browser after login (set SPOTIPY_REDIRECT_URI to this route).
+
+    Hands the code to the run that is waiting for it, then shows a plain page. Served
+    by the app itself, so unlike a one-shot listener it is always there to answer.
+    """
+    if not _login["waiting"]:
+        return _CALLBACK_PAGE.format(
+            heading="Nothing was waiting for a login",
+            body="Go back to the app and start the run again. If Spotify asks you to log in again, "
+                 "that is expected.", script="")
+    _login.update(code=code, error=error)
+    _login["done"].set()
+    if error or not code:
+        return _CALLBACK_PAGE.format(
+            heading="Spotify login failed",
+            body="Spotify said: {}. Go back to the app and try again.".format(
+                (error or "no code returned").replace("<", "")), script="")
+    return _CALLBACK_PAGE.format(
+        heading="Logged in to Spotify",
+        body="You can close this tab and go back to the app.",
+        script="<script>setTimeout(function(){window.close()},1500)</script>")
 
 
 @app.post("/api/stop")
