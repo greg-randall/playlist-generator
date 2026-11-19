@@ -1,5 +1,39 @@
 # Changelog
 
+## Work with Spotify's current API; log everything to the browser console
+- Spotify changed several things, each found by running the real app (the unit tests
+  use stand-ins, so they could not see it):
+  - Creating a playlist now uses `POST /me/playlists`; the old `/users/{id}/playlists`
+    answers 403 with no reason.
+  - Playlist answers carry each track under `item`, not `track`. Loading a playlist
+    found 0 tracks until both keys were accepted (also affected skipping songs already
+    in a playlist).
+  - Search accepts `limit` up to 10 (was 50); anything above answers 400
+    "Invalid limit". Same results, more pages. The test fakes now reject a larger limit.
+  - Listing your playlists needs `playlist-read-private`; the app now asks for the
+    read and modify permissions for public and private playlists, so a saved login
+    from before asks you to log in once more.
+  - `lyricsgenius` 3.18 no longer accepts `verbose`; it is passed only where accepted.
+    `requirements.txt` now needs `spotipy>=2.26.0`.
+- The Spotify login opens from the page and ends on a "Logged in to Spotify" page the
+  app serves (a listener on the redirect port, 8888, kept up while the app runs).
+  Before, spotipy's own browser launch did nothing under WSL and its one-shot listener
+  left "can't reach this page". Load tracks no longer hangs when a login is needed.
+- The browser console now logs everything (see "Debugging in the browser" in the
+  README): the page's requests, the server's calls to every service and the database,
+  log and print output, run events, clicks and field changes. Secrets are masked.
+- The player loads 4 seconds after a playlist has a track, instead of at once. Loading
+  at once failed (a 502 from Spotify) and Refresh fixed it a few seconds later; the
+  playlists being private was not the cause. Nothing reloads it while it may be playing.
+- Known: Spotify reports playlists this app creates as private even though it asks for
+  public (tested: creating with public, then updating to public, both still private),
+  so reusing a playlist by name no longer matches them.
+- `e2e/ui_check.py`: a Playwright check that drives the real app in Chrome against the
+  real services. Passes: page load, Load tracks, Check only, Create playlist (player
+  loads once, never reloads), and a lyric search that adds songs and stops on request.
+- +23 offline tests (270 total, passing with the network blocked); `tests/__init__.py`
+  added so the documented test command works where another `tests` package is installed.
+
 ## Type in keys
 - The reorder panel lists tracks with no known key, each with a key box. Type
   the key in any common form -- Camelot (`8A`), Open Key (`1m`), or a name

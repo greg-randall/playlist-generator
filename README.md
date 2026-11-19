@@ -55,13 +55,23 @@ adds a second tempo and key source when reordering.
 
     python3 -m uvicorn app:app --port 8000
 
-Then open **http://127.0.0.1:8000**. The first time the app talks to Spotify, a
-browser window asks you to log in, and the app remembers the login after that.
+Then open **http://127.0.0.1:8000**. The first time the app talks to Spotify, it opens a
+login tab for you and remembers the login after that. It asks for permission to read and
+change your playlists (public and private); if the permissions the app needs ever change,
+you'll be asked to log in once more.
 
 ## Using the app
 
 The app has two tabs. Both share the console (live progress, one line per song),
-the **Stop** button, and a Spotify player showing the playlist being built.
+the **Stop** button, and a Spotify player showing the playlist being built. The player
+appears a few seconds after the first song is added, because a brand-new playlist isn't
+ready to play at once, and it only reloads at the end of a run if songs were added after
+it loaded (a reload would cut off a song that is playing).
+
+**Playlists are private.** The app asks Spotify for public playlists, but Spotify makes
+the ones it creates private. In testing, a private playlist still played in the page's
+player (with Spotify logged in in that browser), but Spotify's public embed can't see it.
+To share one, choose **Make public** in Spotify's menu for it.
 
 ### Search lyrics
 
@@ -74,13 +84,16 @@ Builds a playlist from songs whose lyrics use your word.
   its lyrics.
 - **Playlist title** -- defaults to the search term. If you already have a public
   playlist with that name, songs are added to it, and songs already in it are skipped.
+  *Known issue:* because Spotify reports the playlists this app creates as private, a
+  repeat search may create a new playlist instead of adding to the earlier one.
 - **Threshold %** -- how much of the lyrics (by characters) the terms must make up.
   The default of 3% means the word really is a theme of the song, not a passing
   mention.
 - **Discover with** -- where to look for songs:
   - **Saved lyrics**: every song whose lyrics are already in your database. Instant,
     and makes no lyric lookups. Needs a database.
-  - **Spotify search**: songs with the word in the *title*.
+  - **Spotify search**: songs with the word in the *title*. Spotify now allows only 10
+    results per request, so this walks through the results in many small steps.
   - **Genius search**: songs with the word in the *lyrics*. Usually the best source,
     especially for unusual words.
 
@@ -180,21 +193,45 @@ Add `-h` to any of them for every option.
 
     python3 -m unittest discover -s tests
 
-The tests never contact Spotify, Genius, or any other service (they use stand-ins),
-so running them can't use up rate limits or get you blocked.
+The 270 tests never contact Spotify, Genius, or any other service (they use stand-ins),
+so running them can't use up rate limits or get you blocked. (`tests/__init__.py` is
+empty on purpose: without it, another package named `tests` installed in your Python can
+shadow this folder and the run fails with `No module named 'tests...'`.)
 
 ### Checking the real app in a real browser
 
-The tests above can't notice when a service changes (Spotify has retired endpoints, tightened
-limits and changed answer shapes). `e2e/ui_check.py` drives the running app in Chrome with
-[Playwright](https://playwright.dev/python/), against the real services:
+The tests above can't notice when a service changes (Spotify has retired endpoints,
+tightened limits and changed answer shapes). `e2e/ui_check.py` drives the running app in
+Chrome with [Playwright](https://playwright.dev/python/), against the real services:
 
     pip3 install playwright
     python3 e2e/ui_check.py                  # page loads, Load tracks, Check only (creates nothing)
-    python3 e2e/ui_check.py --search poland  # also a real lyric search (creates a playlist)
+    python3 e2e/ui_check.py --create         # also Create playlist; checks the player loads once
+    python3 e2e/ui_check.py --search poland  # also a real lyric search, then Stop
 
-Start the app and log in to Spotify once first. It prints PASS or FAIL for each step and saves
-the browser console to `e2e/out/console.log`.
+Start the app and log in to Spotify once first. `--create` and `--search` make real
+playlists in your account. Each step prints PASS or FAIL, and the browser console is
+saved to `e2e/out/console.log`. It uses Google Chrome at `/usr/bin/google-chrome` (change
+`CHROME` at the top of the script if yours is elsewhere). Other options: `--headed` shows
+the window, `--screenshots` saves a picture of each failure (it can hang where headless
+Chrome can't draw, so it's off by default).
+
+## Debugging in the browser
+
+Open the browser's developer tools (F12, then **Console**). Everything the app does is
+logged there:
+
+- every request the page makes, with what it sent and what came back;
+- what the server does for each one: every call to Spotify, Genius, LRCLIB, ReccoBeats,
+  GetSongBPM and Deezer (method, URL, status, time, and the full body of an error), every
+  database call, library log messages, and the lines the app prints;
+- every run event, click and field change, and anything saved in your browser;
+- a summary when a run ends: events by kind, outbound calls by host, and the slowest ones.
+
+In the console, `debugState()` shows the page's state, `runDebug` holds the current run's
+events and server records, and `debugVerbose = true` also logs each poll. Secret-looking
+values in URLs are masked, and request headers, request bodies and successful answers'
+contents are never recorded.
 
 ## More
 
