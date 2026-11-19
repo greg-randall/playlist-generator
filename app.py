@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+import traceback
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +31,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+import debuglog
 import lrclib
 import tempo_store
 import reorder
@@ -109,7 +112,7 @@ def default_executor(run: Run) -> None:
     searches = assemble_terms(p.query, p.matches)  # comma-separated query supported
     sp = _spotify_client(run)
     genius = build_genius_client()
-    store = build_lyric_store()  # Postgres if DATABASE_URL is set, else None
+    store = debuglog.logged(build_lyric_store(), "lyrics_db")  # Postgres if DATABASE_URL is set, else None
 
     builder = PlaylistBuilder(
         sp=sp, genius=genius, searches=searches, threshold=p.threshold,
@@ -238,7 +241,7 @@ _tempo_cache: dict = {}
 
 def _tempo_store():
     """Saved tempo lookups (Postgres when DATABASE_URL is set); a seam tests replace."""
-    return tempo_store.build_tempo_store()
+    return debuglog.logged(tempo_store.build_tempo_store(), "tempo_db")
 
 
 def reorder_executor(run: Run) -> None:
@@ -306,13 +309,22 @@ def reorder_executor(run: Run) -> None:
 
 
 def _run_thread(run: Run, executor) -> None:
+    started = time.perf_counter()
+    debuglog.record("app", "run started: {}".format(getattr(executor, "__name__", "executor")),
+                    run_id=run.id, params=run.params.model_dump())
     try:
         executor(run)
         run.status = "stopped" if run.should_stop() else "complete"
+        debuglog.record("app", "run {} in {:.1f}s".format(run.status, time.perf_counter() - started),
+                        run_id=run.id, status=run.status, events=len(run.events))
         run.emit({"kind": "done", "message": "Stopped." if run.should_stop() else "Done.",
                   "status": run.status})
     except Exception as exc:  # noqa: BLE001 -- surface any failure to the console
         run.status = "error"
+        debuglog.record("app", "run failed after {:.1f}s: {}: {}".format(
+            time.perf_counter() - started, type(exc).__name__, exc),
+            run_id=run.id, error=type(exc).__name__, detail=str(exc),
+            traceback=traceback.format_exc())
         run.emit({"kind": "error", "message": "Run failed: {}".format(exc)})
         run.emit({"kind": "done", "message": "Ended with error.", "status": "error"})
 
@@ -328,6 +340,7 @@ class Manager:
         if self.run is not None and self.run.status == "running":
             raise HTTPException(status_code=409, detail="A run is already in progress.")
         run = Run(uuid.uuid4().hex, params)
+        debuglog.begin_run()
         run.thread = threading.Thread(
             target=_run_thread, args=(run, executor or self.executor), daemon=True)
         self.run = run
@@ -354,6 +367,8 @@ app.state.manager = manager
 
 @app.on_event("startup")
 def _open_login_listener() -> None:
+    debuglog.install_http_logging()
+    debuglog.install_output_capture()
     global _login_listener_up
     _login_listener_up = _start_login_listener()
     if not _login_listener_up and _redirect_port() is not None:
@@ -396,9 +411,15 @@ def playlist_tracks(params: PlaylistLink):
     playlist_id = tracklist.parse_playlist_id(params.link)
     if playlist_id is None:
         raise HTTPException(status_code=400, detail="That doesn't look like a Spotify playlist link.")
+    debuglog.record("app", "load playlist {}".format(playlist_id), playlist_id=playlist_id)
     try:
         name, tracks = tracklist.fetch_playlist(_spotify_client(), playlist_id)
+        debuglog.record("app", "loaded {} track(s) from '{}'".format(len(tracks), name),
+                        playlist_id=playlist_id, name=name, tracks=len(tracks))
     except Exception as exc:  # noqa: BLE001 -- report whatever Spotify said
+        debuglog.record("app", "load playlist failed: {}: {}".format(type(exc).__name__, exc),
+                        playlist_id=playlist_id, error=type(exc).__name__, detail=str(exc),
+                        traceback=traceback.format_exc())
         raise HTTPException(
             status_code=502,
             detail="Spotify wouldn't return that playlist ({}). "
@@ -443,14 +464,28 @@ def stop_run():
 
 
 @app.get("/api/events")
-def get_events(cursor: int = 0):
+def get_events(cursor: int = 0, debug_cursor: int = 0, generation: Optional[int] = None):
+    """Run events after ``cursor``, plus the server's debug records after ``debug_cursor``."""
+    debug, new_debug_cursor, current_generation = debuglog.since(debug_cursor, generation)
     run = manager.run
     if run is None:
-        return {"events": [], "cursor": 0, "status": "idle", "playlist_id": None}
+        return {"events": [], "cursor": 0, "status": "idle", "playlist_id": None,
+                "debug": debug, "debug_cursor": new_debug_cursor, "generation": current_generation}
     events = run.slice(cursor)
     return {
         "events": events,
         "cursor": cursor + len(events),
         "status": run.status,
         "playlist_id": run.playlist_id,
+        "debug": debug,
+        "debug_cursor": new_debug_cursor,
+        "generation": current_generation,
     }
+
+
+@app.get("/api/debug")
+def get_debug(cursor: int = 0, generation: Optional[int] = None):
+    """The server's debug records after ``cursor`` (for requests that aren't runs)."""
+    records, new_cursor, current_generation = debuglog.since(cursor, generation)
+    return {"debug": records, "debug_cursor": new_cursor, "generation": current_generation,
+            "server_uptime_seconds": debuglog.uptime_seconds()}

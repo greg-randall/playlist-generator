@@ -214,23 +214,105 @@ function setStatus(s) {
 }
 
 // ---- Debug output in the browser's devtools console (F12 > Console) ----------
-// Every event the server sends is logged with its full data and the time since the
-// run started. Verbose events are collapsed groups; errors use console.error. When
-// a run ends, a summary table counts events by kind. window.runDebug holds the run.
+// Logs everything: every request the page makes (with its body and answer), every record
+// the server keeps while it works (outbound HTTP calls, database calls, library logs,
+// printed lines), every run event, every click and field change, storage writes, and
+// errors. Secrets are masked on the server; the page never sees tokens.
+// Helpers: window.debugState() (page state), window.runDebug (this run's record),
+// window.debugVerbose = true (also log each 0.4s poll).
+window.debugVerbose = false;
 const COLORS = {error:"#ff6b6b", miss:"#ffa94d", added:"#51cf66", found:"#51cf66",
-                duplicate:"#868e96", below:"#868e96", tempo:"#e9ecef", done:"#7fbfff"};
-let runDebug = null;
+                duplicate:"#868e96", below:"#868e96", tempo:"#e9ecef", done:"#7fbfff", auth:"#ffa94d"};
+const CATEGORY_COLORS = {http:"#4dabf7", db:"#b197fc", log:"#ffd43b", print:"#adb5bd", app:"#69db7c"};
+let runDebug = {url: "(page)", body: null, startedAt: performance.now(), events: [], polls: 0, server: []};
+window.runDebug = runDebug;
+let serverDebug = {cursor: 0, generation: null};
+
+const nativeFetch = window.fetch.bind(window);
+const clock = (ms) => new Date(ms).toISOString().slice(11, 23);
+function parseBody(body) {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body !== "string") return "(" + Object.prototype.toString.call(body) + ")";
+  try { return JSON.parse(body); } catch (e) { return body; }
+}
+
+// Print server-side records (http / db / log / print / app) as they arrive.
+const seenServer = new Set();   // a record can arrive twice if two requests overlap; print it once
+function printServerRecords(records) {
+  records.forEach((rec) => {
+    const id = rec.t + "|" + rec.cat + "|" + rec.msg;
+    if (seenServer.has(id)) return;
+    seenServer.add(id);
+    runDebug.server.push(rec);
+    const bad = rec.ok === false || (rec.status && rec.status >= 400) ||
+                rec.level === "ERROR" || rec.level === "CRITICAL";
+    const warn = rec.level === "WARNING";
+    const label = "%c[" + clock(rec.t * 1000) + "] server " + rec.cat + "%c " + rec.msg;
+    const style = "color:" + (CATEGORY_COLORS[rec.cat] || "#adb5bd") + ";font-weight:bold";
+    if (bad) { console.error(label, style, "", rec); return; }
+    if (warn) { console.warn(label, style, "", rec); return; }
+    console.groupCollapsed(label, style, "");
+    console.log(rec);
+    console.groupEnd();
+  });
+}
+
+async function pullServerDebug() {
+  try {
+    const r = await nativeFetch("/api/debug?cursor=" + serverDebug.cursor +
+      (serverDebug.generation === null ? "" : "&generation=" + serverDebug.generation));
+    if (!r.ok) return;
+    const data = await r.json();
+    serverDebug = {cursor: data.debug_cursor, generation: data.generation};
+    printServerRecords(data.debug || []);
+  } catch (e) { /* the server is unreachable; the fetch wrapper already logged why */ }
+}
+
+// Every request the page makes, with the body it sent and the answer it got.
+window.fetch = async function (input, init) {
+  const url = typeof input === "string" ? input : (input && input.url) || String(input);
+  const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
+  const isPoll = url.indexOf("/api/events") === 0 || url.indexOf("/api/debug") === 0;
+  const requestBody = parseBody(init && init.body);
+  const started = performance.now();
+  try {
+    const response = await nativeFetch(input, init);
+    const ms = Math.round(performance.now() - started);
+    if (!isPoll || window.debugVerbose || !response.ok) {
+      const label = "%c[" + clock(Date.now()) + "] page " + method + " " + url + "%c -> " + response.status +
+                    " " + response.statusText + " in " + ms + "ms";
+      const style = "color:#4dabf7;font-weight:bold";
+      response.clone().text().then((text) => {
+        let answer = text;
+        try { answer = JSON.parse(text); } catch (e) { /* not JSON: show the text */ }
+        const group = response.ok ? console.groupCollapsed : console.group;
+        group.call(console, label, style, response.ok ? "" : "color:#ff6b6b");
+        if (requestBody !== undefined) console.log("request body", requestBody);
+        console.log("answer", answer);
+        console.log("headers", Object.fromEntries(response.headers.entries()));
+        console.groupEnd();
+      }).catch(() => {});
+    }
+    if (!isPoll) setTimeout(pullServerDebug, 0);   // what the server did to answer this
+    return response;
+  } catch (err) {
+    console.error("[playlist] page " + method + " " + url + " failed before any answer (is the server up?)",
+                  err, requestBody);
+    throw err;
+  }
+};
 
 function debugStart(url, body) {
-  runDebug = {url: url, body: body, startedAt: performance.now(), events: [], polls: 0};
+  runDebug = {url: url, body: body, startedAt: performance.now(), events: [], polls: 0, server: []};
   window.runDebug = runDebug;
+  serverDebug = {cursor: 0, generation: null};
+  seenServer.clear();
   console.groupCollapsed("%c[playlist] run started: " + url, "color:#7fbfff;font-weight:bold");
   console.log("request body", body);
   console.groupEnd();
 }
 
 function debugEvent(ev) {
-  if (!runDebug) return;
   const t = ((performance.now() - runDebug.startedAt) / 1000).toFixed(2) + "s";
   runDebug.events.push(Object.assign({t: t}, ev));
   const label = "%c[" + t + "] " + ev.kind + "%c " + (ev.message || "");
@@ -245,17 +327,87 @@ function debugEvent(ev) {
 }
 
 function debugSummary(status) {
-  if (!runDebug) return;
   const seconds = ((performance.now() - runDebug.startedAt) / 1000).toFixed(1);
   const counts = {};
   runDebug.events.forEach((ev) => { counts[ev.kind] = (counts[ev.kind] || 0) + 1; });
+  const hosts = {}, slow = [];
+  runDebug.server.filter((r) => r.cat === "http").forEach((r) => {
+    let host = r.url; try { host = new URL(r.url).host; } catch (e) { /* keep the raw url */ }
+    const h = hosts[host] || (hosts[host] = {calls: 0, errors: 0, total_ms: 0});
+    h.calls++; h.total_ms += r.ms || 0; if (r.ok === false) h.errors++;
+    slow.push({ms: r.ms, call: r.method + " " + r.url, status: r.status || r.error});
+  });
+  const db = runDebug.server.filter((r) => r.cat === "db");
   console.group("%c[playlist] run " + (status || "finished") + " in " + seconds + "s ("
-                + runDebug.events.length + " events, " + runDebug.polls + " polls)",
-                "color:#7fbfff;font-weight:bold");
-  console.table(counts);
-  console.log("all events: window.runDebug.events");
+                + runDebug.events.length + " events, " + runDebug.polls + " polls, "
+                + runDebug.server.length + " server records)", "color:#7fbfff;font-weight:bold");
+  console.log("events by kind"); console.table(counts);
+  if (Object.keys(hosts).length) { console.log("outbound HTTP by host"); console.table(hosts); }
+  if (slow.length) { console.log("slowest outbound calls"); console.table(slow.sort((a, b) => b.ms - a.ms).slice(0, 10)); }
+  if (db.length) console.log("database calls: " + db.length + ", " + db.reduce((n, r) => n + (r.ms || 0), 0) + "ms total");
+  console.log("everything: window.runDebug.events and window.runDebug.server");
   console.groupEnd();
 }
+
+// What you do on the page: clicks, field changes (typing is logged once you pause), tabs.
+function describe(el) {
+  if (!el || !el.tagName) return String(el);
+  const text = (el.innerText || el.value || "").replace(/\s+/g, " ").trim();
+  return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") +
+         (el.className && typeof el.className === "string" ? "." + el.className.split(" ").join(".") : "") +
+         (text && el.tagName !== "TEXTAREA" ? ' "' + text.slice(0, 60) + '"' : "");
+}
+document.addEventListener("click", (e) => {
+  const target = e.target.closest("button, a, input, label, select, [onclick]") || e.target;
+  console.log("%c[" + clock(Date.now()) + "] click%c " + describe(target), "color:#69db7c;font-weight:bold", "");
+}, true);
+const typingTimers = new WeakMap();
+function logField(el) {
+  const value = el.type === "checkbox" ? el.checked
+              : el.tagName === "TEXTAREA" ? {lines: el.value.split("\n").filter(Boolean).length, chars: el.value.length}
+              : el.value;
+  console.log("%c[" + clock(Date.now()) + "] field%c " + describe(el) + " =", "color:#69db7c;font-weight:bold", "", value);
+}
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  clearTimeout(typingTimers.get(el));
+  typingTimers.set(el, setTimeout(() => logField(el), 600));
+}, true);
+document.addEventListener("change", (e) => { clearTimeout(typingTimers.get(e.target)); logField(e.target); }, true);
+
+// Anything stored in this browser (the tempos and keys you typed in).
+const nativeSetItem = Storage.prototype.setItem, nativeRemoveItem = Storage.prototype.removeItem;
+Storage.prototype.setItem = function (key, value) {
+  console.log("[playlist] storage set " + key + " (" + String(value).length + " chars)", parseBody(String(value)));
+  return nativeSetItem.call(this, key, value);
+};
+Storage.prototype.removeItem = function (key) {
+  console.log("[playlist] storage remove " + key);
+  return nativeRemoveItem.call(this, key);
+};
+
+// Page errors that would otherwise go unnoticed.
+window.addEventListener("error", (e) => console.error("[playlist] page error:", e.message, e.filename + ":" + e.lineno, e.error));
+window.addEventListener("unhandledrejection", (e) => console.error("[playlist] unhandled promise rejection:", e.reason));
+
+window.debugState = function () {
+  const state = {cursor, polling: polling !== null, playlistId, playerMounted, emptyState,
+                 knownTracks: Object.keys(known).length, known, myTempos, myKeys,
+                 serverDebug, runUrl: runDebug.url, events: runDebug.events.length,
+                 serverRecords: runDebug.server.length};
+  console.log("[playlist] state", state);
+  return state;
+};
+
+// At load: where we are, what's stored, and whether the server is reachable.
+console.groupCollapsed("%c[playlist] page loaded", "color:#7fbfff;font-weight:bold");
+console.log("location", location.href, "| online:", navigator.onLine, "| " + navigator.userAgent);
+try {
+  console.log("storage", Object.keys(localStorage).map((k) => k + ": " + (localStorage.getItem(k) || "").length + " chars"));
+} catch (e) { console.log("storage unavailable", e); }
+console.log("helpers: debugState(), runDebug, debugVerbose = true (log every poll)");
+console.groupEnd();
+setTimeout(pullServerDebug, 0);
 
 function line(ev) {
   debugEvent(ev);
@@ -306,11 +458,15 @@ function refreshPlayer() {
 }
 
 async function poll() {
-  if (runDebug) runDebug.polls++;
-  const r = await fetch("/api/events?cursor=" + cursor);
-  if (!r.ok) console.error("[playlist] poll failed:", r.status, r.statusText);
+  runDebug.polls++;
+  const r = await fetch("/api/events?cursor=" + cursor + "&debug_cursor=" + serverDebug.cursor +
+    (serverDebug.generation === null ? "" : "&generation=" + serverDebug.generation));
   const data = await r.json();
   cursor = data.cursor;
+  serverDebug = {cursor: data.debug_cursor, generation: data.generation};
+  printServerRecords(data.debug || []);
+  if (window.debugVerbose) console.log("[playlist] poll", runDebug.polls, "status:", data.status,
+    "events:", data.events.length, "server records:", (data.debug || []).length);
   let done = false;
   for (const ev of data.events) {
     line(ev);
@@ -501,10 +657,13 @@ async function loadPlaylist() {
   if (!link) { alert("Paste a playlist link first."); return; }
   $("loadList").disabled = true;
   try {
+    console.log("[playlist] load tracks: POST /api/playlist-tracks", {link: link});
     const r = await fetch("/api/playlist-tracks", {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({link}),
     });
     const data = await r.json().catch(() => ({}));
+    console.log("[playlist] load tracks: response", r.status, data);
+    if (data.tracks) console.table(data.tracks);
     if (!r.ok) {
       line({kind:"error", message:"Could not load that playlist: " + (data.detail || r.status)});
       return;
