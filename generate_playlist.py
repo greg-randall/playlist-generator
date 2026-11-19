@@ -636,7 +636,9 @@ class PlaylistBuilder:
         """Use Spotify as the discovery engine, matching on Genius lyrics."""
         self.emit("search", "Searching Spotify for '{}'".format(main_search), engine="spotify")
         offset = start_offset
-        limit = 50
+        # Spotify's search now rejects a limit above 10 with 400 "Invalid limit" (it was 50).
+        # Smaller pages, same results: the offset still walks through them, in more requests.
+        limit = 10
         # Spotify caps search paging at offset+limit <= 1000.
         while offset < 1000:
             if self.should_stop():
@@ -748,6 +750,20 @@ class PlaylistBuilder:
 # Spotify / playlist plumbing (network side, not unit tested)
 # --------------------------------------------------------------------------- #
 
+# read-private: listing your playlists (to reuse one with the same name) and loading a
+# private playlist; modify-private: adding to one. Spotify now answers 403 "Insufficient
+# client scope" to the list call without read-private. A token saved with fewer scopes
+# makes spotipy ask you to log in again once.
+SPOTIFY_SCOPE = "playlist-modify-public playlist-modify-private playlist-read-private"
+
+
+def has_spotify_login() -> bool:
+    """True if a saved Spotify login covers SPOTIFY_SCOPE (no browser step needed)."""
+    from spotipy.oauth2 import SpotifyOAuth
+
+    return SpotifyOAuth(scope=SPOTIFY_SCOPE, cache_path="cache.txt").get_cached_token() is not None
+
+
 def build_spotify_client(on_auth_url=None, wait_for_code=None):
     """Authenticate against Spotify. Imported lazily so the module stays import-safe.
 
@@ -776,7 +792,7 @@ def build_spotify_client(on_auth_url=None, wait_for_code=None):
             on_auth_url(self.get_authorize_url())
 
     print("Authenticating with Spotify")
-    scope = "playlist-modify-public"
+    scope = SPOTIFY_SCOPE
     oauth_class = _PageLoginOAuth if on_auth_url else SpotifyOAuth
     # requests_timeout bounds any single call (no indefinite hangs); retries
     # kept modest so a rate-limited call doesn't block Stop for too long.

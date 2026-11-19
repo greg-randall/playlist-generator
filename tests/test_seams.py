@@ -34,8 +34,10 @@ class FakeDiscoverySpotify:
     def me(self):
         return {"id": "u"}
 
-    def search(self, q, type="track", limit=50, offset=0):
-        idx = offset // 50
+    def search(self, q, type="track", limit=10, offset=0):
+        if limit > 10:  # what Spotify answers today: 400 "Invalid limit"
+            raise Exception("400 Invalid limit")
+        idx = offset // limit
         items = self.pages[idx] if idx < len(self.pages) else []
         return {"tracks": {"items": items, "total": 999}}
 
