@@ -93,12 +93,13 @@ def fetch_playlist(sp, playlist_id: str) -> tuple[str, list[dict]]:
     tracks, offset = [], 0
     while True:
         page = sp.playlist_items(
-            playlist_id, fields="items(track(id,name,artists(name))),next",
+            playlist_id, fields="items(item(id,name,artists(name))),next",
             limit=BATCH_SIZE, offset=offset, additional_types=("track",),
         )
         items = page.get("items") or []
         for item in items:
-            track = item.get("track") or {}
+            # Spotify's /items answers use "item"; the old /tracks answers used "track".
+            track = item.get("item") or item.get("track") or {}
             if not track.get("name"):
                 continue  # removed/unavailable entry
             artist = ((track.get("artists") or [{}])[0] or {}).get("name") or ""
