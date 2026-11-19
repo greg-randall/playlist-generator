@@ -774,10 +774,13 @@ def build_genius_client():
     # lever against 429s); tune via GENIUS_SLEEP. retries kept low so we don't
     # amplify a 429 -- the builder's own cooldown handles throttling instead.
     sleep_time = float(os.environ.get("GENIUS_SLEEP", "1.0"))
-    return lyricsgenius.Genius(
-        token, remove_section_headers=True, verbose=False,
-        retries=1, timeout=10, sleep_time=sleep_time,
-    )
+    options = dict(remove_section_headers=True, retries=1, timeout=10, sleep_time=sleep_time)
+    # Older lyricsgenius prints a lot unless told not to; newer versions (3.18) dropped the
+    # argument, report through logging instead, and raise TypeError if it is passed.
+    import inspect
+    if "verbose" in inspect.signature(lyricsgenius.Genius.__init__).parameters:
+        options["verbose"] = False
+    return lyricsgenius.Genius(token, **options)
 
 
 def _seed_from_playlist_tracks(sp, builder: "PlaylistBuilder", playlist_id: str) -> None:
