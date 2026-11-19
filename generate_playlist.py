@@ -748,17 +748,28 @@ class PlaylistBuilder:
 # Spotify / playlist plumbing (network side, not unit tested)
 # --------------------------------------------------------------------------- #
 
-def build_spotify_client():
-    """Authenticate against Spotify. Imported lazily so the module stays import-safe."""
+def build_spotify_client(on_auth_url=None):
+    """Authenticate against Spotify. Imported lazily so the module stays import-safe.
+
+    ``on_auth_url(url)``, if given, is called with the Spotify login URL when a
+    login is needed, instead of spotipy opening a browser itself. The web app uses
+    this to open the login from the page, because spotipy's own browser launch
+    silently does nothing where no desktop browser is reachable (e.g. WSL).
+    """
     import spotipy
     from spotipy.oauth2 import SpotifyOAuth
 
+    class _PageLoginOAuth(SpotifyOAuth):
+        def _open_auth_url(self):  # spotipy's hook for opening the login page
+            on_auth_url(self.get_authorize_url())
+
     print("Authenticating with Spotify")
     scope = "playlist-modify-public"
+    oauth_class = _PageLoginOAuth if on_auth_url else SpotifyOAuth
     # requests_timeout bounds any single call (no indefinite hangs); retries
     # kept modest so a rate-limited call doesn't block Stop for too long.
     return spotipy.Spotify(
-        auth_manager=SpotifyOAuth(show_dialog=True, scope=scope, cache_path="cache.txt"),
+        auth_manager=oauth_class(show_dialog=True, scope=scope, cache_path="cache.txt"),
         requests_timeout=10,
         retries=2,
     )

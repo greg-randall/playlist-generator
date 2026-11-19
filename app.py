@@ -99,14 +99,13 @@ def default_executor(run: Run) -> None:
     Imported lazily so the web app (and its tests) load without spotipy/genius.
     """
     from generate_playlist import (
-        PlaylistBuilder, assemble_terms, build_spotify_client, build_genius_client,
-        resolve_playlist,
+        PlaylistBuilder, assemble_terms, build_genius_client, resolve_playlist,
     )
     from lyric_store import build_lyric_store
 
     p = run.params
     searches = assemble_terms(p.query, p.matches)  # comma-separated query supported
-    sp = build_spotify_client()
+    sp = _spotify_client(run)
     genius = build_genius_client()
     store = build_lyric_store()  # Postgres if DATABASE_URL is set, else None
 
@@ -134,11 +133,20 @@ def default_executor(run: Run) -> None:
     builder.report_misses()
 
 
-def _spotify_client():
-    """Spotify client for list runs; a seam so tests can swap in a fake."""
+def _spotify_client(run: Optional[Run] = None):
+    """Spotify client for list runs; a seam so tests can swap in a fake.
+
+    With a run, a needed Spotify login is sent to the page as an ``auth`` event
+    (the page opens it) rather than left to spotipy's own browser launch.
+    """
     from generate_playlist import build_spotify_client
 
-    return build_spotify_client()
+    def announce_login(url: str) -> None:
+        run.emit({"kind": "auth", "url": url,
+                  "message": "Spotify needs you to log in. A new tab should open; if not, "
+                             "open this link and approve: " + url})
+
+    return build_spotify_client(on_auth_url=announce_login if run else None)
 
 
 def tracklist_executor(run: Run) -> None:
@@ -149,7 +157,7 @@ def tracklist_executor(run: Run) -> None:
         run.emit({"kind": kind, "message": message, **data})
 
     summary = tracklist.run(
-        _spotify_client(), p.text, title=p.title, dry_run=p.dry_run,
+        _spotify_client(run), p.text, title=p.title, dry_run=p.dry_run,
         emit=emit, should_stop=run.should_stop, known=p.known,
     )
     run.playlist_id = summary["playlist_id"]
@@ -179,7 +187,7 @@ def reorder_executor(run: Run) -> None:
     entries = tracklist.parse_tracklist(p.text)
     emit("search", "Looking up {} track(s) on Spotify...".format(len(entries)))
     resolved, skipped = tracklist.resolve_tracklist(
-        _spotify_client(), entries, emit=emit, should_stop=run.should_stop, known=p.known)
+        _spotify_client(run), entries, emit=emit, should_stop=run.should_stop, known=p.known)
     if run.should_stop():
         return
     tracks = [{"line": label, "id": track_id} for track_id, label in resolved]

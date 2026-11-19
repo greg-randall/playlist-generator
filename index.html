@@ -57,6 +57,7 @@
   #console .error  { color:var(--red); }
   #console .below, #console .duplicate { color:var(--muted); }
   #console .tempo { color:var(--text); }
+  #console .auth { color:var(--orange); }
   #console .search, #console .progress, #console .reorder, #console .summary, #console .done,
   #console .playlist { color:#7fbfff; }
   #needs { padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel); }
@@ -263,7 +264,18 @@ function line(ev) {
   let cls = ev.kind;
   if (ev.kind === "evaluate") cls = ev.verdict === "MATCH" ? "added" : "below";
   div.className = cls;
-  div.textContent = ev.message || JSON.stringify(ev);
+  if (ev.kind === "auth" && ev.url) {
+    // The login link, clickable in case the browser blocks the new tab.
+    div.appendChild(document.createTextNode("Spotify needs you to log in. A new tab should open; "
+                                            + "if not, "));
+    const a = document.createElement("a");
+    a.href = ev.url; a.target = "_blank"; a.rel = "noopener";
+    a.textContent = "click here to log in";
+    a.style.color = "inherit";
+    div.appendChild(a);
+  } else {
+    div.textContent = ev.message || JSON.stringify(ev);
+  }
   const c = $("console");
   const atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
   c.appendChild(div);
@@ -309,6 +321,8 @@ async function poll() {
       else if (!playerMounted) renderPlayer("warming");
     }
     if (ev.kind === "reorder") showReorder(ev);
+    // The server needs a Spotify login: open it here (the server can't reach a browser).
+    if (ev.kind === "auth" && ev.url) window.open(ev.url, "_blank", "noopener");
     // A new add OR a duplicate both mean the playlist has at least one track.
     if (ev.kind === "added" || ev.kind === "duplicate") mountPlayer();
     if (ev.kind === "done") { done = true; setStatus(ev.status || "complete"); }
